@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 const workerSchema = new mongoose.Schema({
   name: {
@@ -79,4 +79,4 @@ workerSchema.index({ createdAt: -1 });
 
 const Worker = mongoose.model('Worker', workerSchema);
 
-export { Worker }; 
+module.exports = { Worker }; 
