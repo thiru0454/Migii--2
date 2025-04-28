@@ -12,6 +12,9 @@ import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, MapPin } from "lucide-react";
 import { registerWorkerInStorage } from "@/utils/firebase";
+import { sendRegistrationEmail } from "@/utils/emailService";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { registerNewWorker } from '@/services/workerService';
 
 const SKILLS = ["Construction Worker", "Plumber", "Electrician", "Carpenter", "Painter", "Gardener", "Driver", "Cleaner", "Cook", "Other"];
 const STATES = ["Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal"];
@@ -35,6 +38,7 @@ export function WorkerRegistrationForm({ onSuccess }: WorkerRegistrationFormProp
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const location = useGeolocation();
+  const isMobile = useIsMobile();
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -51,7 +55,6 @@ export function WorkerRegistrationForm({ onSuccess }: WorkerRegistrationFormProp
 
   const onSubmit = async (values: z.infer<typeof formSchema>) => {
     if (isSubmitting) return;
-    
     try {
       setIsSubmitting(true);
       setError(null);
@@ -68,11 +71,12 @@ export function WorkerRegistrationForm({ onSuccess }: WorkerRegistrationFormProp
         photoUrl: photoPreview || undefined,
         latitude: location.latitude || undefined,
         longitude: location.longitude || undefined,
-        status: "pending" as const, // Explicitly set the literal type
       };
 
-      // Register worker directly without OTP verification
-      const registeredWorker = await registerWorkerInStorage(workerData);
+      // Register worker in Supabase
+      const registeredWorker = await registerNewWorker(workerData);
+      
+      toast.success('Worker updated to Supabase!');
       
       if (onSuccess) {
         onSuccess(registeredWorker);
@@ -145,7 +149,7 @@ export function WorkerRegistrationForm({ onSuccess }: WorkerRegistrationFormProp
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className={`grid grid-cols-1 ${isMobile ? "" : "md:grid-cols-2"} gap-6`}>
           <FormField control={form.control} name="name" render={({ field }) => (
             <FormItem>
               <FormLabel>Full Name</FormLabel>
@@ -190,7 +194,7 @@ export function WorkerRegistrationForm({ onSuccess }: WorkerRegistrationFormProp
                 <FormControl>
                   <SelectTrigger><SelectValue placeholder="Select your origin state" /></SelectTrigger>
                 </FormControl>
-                <SelectContent>
+                <SelectContent className={isMobile ? "max-h-[200px]" : ""}>
                   {STATES.map((state) => (<SelectItem key={state} value={state}>{state}</SelectItem>))}
                 </SelectContent>
               </Select>

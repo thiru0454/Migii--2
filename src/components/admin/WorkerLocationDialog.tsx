@@ -1,4 +1,3 @@
-
 import { 
   Dialog, 
   DialogContent, 
@@ -12,10 +11,19 @@ import { useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { MigrantWorker } from "@/types/worker";
-import mongoDbService, { WorkerLocation } from "@/utils/mongoDbService";
+import { supabase } from "@/utils/supabaseClient";
 import { MapPin, Navigation, Clock } from "lucide-react";
+import { toast } from "sonner";
 
 const MAPBOX_TOKEN = "pk.eyJ1IjoiZGVtb3VzZXIiLCJhIjoiY2xhd2lioTJzMGkwbzN5bXBwZjE2bnF1cCJ9.8rCpA8p9no3k4YrPQjd5dg";
+
+interface WorkerLocation {
+  workerId: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  timestamp: number;
+}
 
 interface WorkerLocationDialogProps {
   worker: MigrantWorker | null;
@@ -35,109 +43,154 @@ export function WorkerLocationDialog({ worker, open, onOpenChange }: WorkerLocat
   const [loading, setLoading] = useState(true);
   const [location, setLocation] = useState<WorkerLocation | null>(null);
   const [locationHistory, setLocationHistory] = useState<WorkerLocation[]>([]);
+  const [mapInitialized, setMapInitialized] = useState(false);
 
   // Initialize map when dialog opens
   useEffect(() => {
     if (!open || !worker || !mapContainer.current) return;
     
     setLoading(true);
+
+    const initializeMap = () => {
+      console.log("Initializing map in WorkerLocationDialog");
+      
+      if (mapRef.current) {
+        // Map already exists, just resize it
+        mapRef.current.resize();
+      } else {
+        // Initialize new map
+        try {
+          mapboxgl.accessToken = MAPBOX_TOKEN;
+          const map = new mapboxgl.Map({
+            container: mapContainer.current!,
+            style: "mapbox://styles/mapbox/streets-v11",
+            center: [80.2707, 13.0827], // Default center
+            zoom: 12,
+          });
+          
+          map.addControl(new mapboxgl.NavigationControl(), "top-right");
+          
+          map.on('load', () => {
+            console.log("Map loaded successfully");
+            setMapInitialized(true);
+            fetchWorkerLocation();
+          });
+          
+          map.on('error', (e) => {
+            console.error("Map error:", e);
+            toast.error("Error loading map");
+          });
+          
+          mapRef.current = map;
+        } catch (error) {
+          console.error("Failed to initialize map:", error);
+          toast.error("Failed to initialize map");
+          setLoading(false);
+        }
+      }
+    };
     
-    if (!mapRef.current) {
-      mapboxgl.accessToken = MAPBOX_TOKEN;
-      const map = new mapboxgl.Map({
-        container: mapContainer.current,
-        style: "mapbox://styles/mapbox/streets-v11",
-        center: [80.2707, 13.0827], // Default center
-        zoom: 12,
-      });
-      
-      map.addControl(new mapboxgl.NavigationControl(), "top-right");
-      mapRef.current = map;
-      
-      map.on('load', () => {
-        // Map is loaded, now fetch location data
-        fetchWorkerLocation();
-      });
-    } else {
-      // Map already exists, just fetch location data
-      fetchWorkerLocation();
-    }
+    // Small delay to ensure the container is properly rendered
+    const timer = setTimeout(() => {
+      initializeMap();
+    }, 300);
     
     // Poll for location updates
     const interval = setInterval(fetchWorkerLocation, 10000);
     
     return () => {
+      clearTimeout(timer);
       clearInterval(interval);
+      
       if (!open) {
-        // Cleanup when dialog closes
-        if (mapRef.current && routeLayerRef.current) {
-          if (mapRef.current.getLayer(routeLayerRef.current)) {
-            mapRef.current.removeLayer(routeLayerRef.current);
-          }
-        }
-        
-        if (mapRef.current && routeSourceRef.current) {
-          if (mapRef.current.getSource(routeSourceRef.current)) {
-            mapRef.current.removeSource(routeSourceRef.current);
-          }
-        }
-        
-        if (markerRef.current) {
-          markerRef.current.remove();
-          markerRef.current = null;
-        }
+        cleanupMap();
       }
     };
   }, [open, worker]);
   
   // Update UI when location changes
   useEffect(() => {
-    if (!mapRef.current || !location) return;
+    if (!mapInitialized || !mapRef.current || !location) return;
 
     updateMapWithLocation(location);
     setLastUpdated(new Date());
     setLoading(false);
-  }, [location]);
+  }, [location, mapInitialized]);
   
   // Update history display when toggled
   useEffect(() => {
-    if (!mapRef.current || !worker) return;
+    if (!mapInitialized || !mapRef.current || !worker) return;
     
     if (showHistory) {
       displayLocationHistory();
     } else {
       hideLocationHistory();
     }
-  }, [showHistory, locationHistory]);
+  }, [showHistory, locationHistory, mapInitialized]);
   
   const fetchWorkerLocation = async () => {
     if (!worker) return;
     
     try {
-      // In a real implementation, this would fetch from a backend API connected to MongoDB
-      // For this demo, we'll use the mock service
-      const currentLocation = mongoDbService.getWorkerLocation(worker.id);
-      const history = mongoDbService.getWorkerLocationHistory(worker.id);
-      
-      if (!currentLocation) {
-        // If no location exists, generate a mock one
-        const mockLocation: WorkerLocation = {
+      console.log(`Fetching location for worker: ${worker.id}`);
+      const { data: locationData, error } = await supabase
+        .from('worker_locations')
+        .select('*')
+        .eq('worker_id', worker.id)
+        .eq('status', 'active')
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          // No active location found, generate a mock one
+          console.log("No location found, generating mock location");
+          const mockLocation: WorkerLocation = {
+            workerId: worker.id,
+            name: worker.name,
+            latitude: worker.latitude || 13.0827 + (Math.random() * 0.1 - 0.05),
+            longitude: worker.longitude || 80.2707 + (Math.random() * 0.1 - 0.05),
+            timestamp: Date.now()
+          };
+          
+          await startLocationTracking(worker.id);
+          setLocation(mockLocation);
+        } else {
+          throw error;
+        }
+      } else {
+        console.log("Found existing location:", locationData);
+        const location: WorkerLocation = {
           workerId: worker.id,
           name: worker.name,
-          latitude: worker.latitude || 13.0827 + (Math.random() * 0.1 - 0.05),
-          longitude: worker.longitude || 80.2707 + (Math.random() * 0.1 - 0.05),
-          timestamp: Date.now()
+          latitude: locationData.latitude || worker.latitude || 13.0827,
+          longitude: locationData.longitude || worker.longitude || 80.2707,
+          timestamp: new Date(locationData.started_at).getTime()
         };
-        
-        await mongoDbService.updateWorkerLocation(mockLocation);
-        setLocation(mockLocation);
-      } else {
-        setLocation(currentLocation);
+        setLocation(location);
       }
       
+      // Fetch location history
+      const { data: historyData, error: historyError } = await supabase
+        .from('worker_locations')
+        .select('*')
+        .eq('worker_id', worker.id)
+        .order('created_at', { ascending: false });
+
+      if (historyError) throw historyError;
+
+      const history: WorkerLocation[] = historyData.map(loc => ({
+        workerId: worker.id,
+        name: worker.name,
+        latitude: loc.latitude || worker.latitude || 13.0827,
+        longitude: loc.longitude || worker.longitude || 80.2707,
+        timestamp: new Date(loc.started_at).getTime()
+      }));
+
       setLocationHistory(history);
     } catch (error) {
       console.error("Failed to fetch worker location:", error);
+      toast.error("Failed to fetch worker location");
+      setLoading(false);
     }
   };
   
@@ -256,6 +309,78 @@ export function WorkerLocationDialog({ worker, open, onOpenChange }: WorkerLocat
     routeSourceRef.current = null;
   };
 
+  const cleanupMap = () => {
+    if (mapRef.current && routeLayerRef.current) {
+      if (mapRef.current.getLayer(routeLayerRef.current)) {
+        mapRef.current.removeLayer(routeLayerRef.current);
+      }
+    }
+    
+    if (mapRef.current && routeSourceRef.current) {
+      if (mapRef.current.getSource(routeSourceRef.current)) {
+        mapRef.current.removeSource(routeSourceRef.current);
+      }
+    }
+    
+    if (markerRef.current) {
+      markerRef.current.remove();
+      markerRef.current = null;
+    }
+  };
+
+  const startLocationTracking = async (workerId: string) => {
+    try {
+      const { error } = await supabase
+        .from('worker_locations')
+        .insert([
+          {
+            worker_id: workerId,
+            status: 'active',
+            started_at: new Date().toISOString()
+          }
+        ]);
+
+      if (error) throw error;
+      toast.success('Location tracking started');
+    } catch (error) {
+      console.error('Error starting location tracking:', error);
+      toast.error('Failed to start location tracking');
+    }
+  };
+
+  const stopLocationTracking = async (workerId: string) => {
+    try {
+      const { error } = await supabase
+        .from('worker_locations')
+        .update({ status: 'inactive', ended_at: new Date().toISOString() })
+        .eq('worker_id', workerId)
+        .eq('status', 'active');
+
+      if (error) throw error;
+      toast.success('Location tracking stopped');
+    } catch (error) {
+      console.error('Error stopping location tracking:', error);
+      toast.error('Failed to stop location tracking');
+    }
+  };
+
+  const getLocationHistory = async (workerId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('worker_locations')
+        .select('*')
+        .eq('worker_id', workerId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      console.error('Error fetching location history:', error);
+      toast.error('Failed to fetch location history');
+      return [];
+    }
+  };
+
   if (!worker) return null;
 
   return (
@@ -330,3 +455,4 @@ export function WorkerLocationDialog({ worker, open, onOpenChange }: WorkerLocat
     </Dialog>
   );
 }
+
